@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: MIT
+// Compatible with OpenZeppelin Contracts ^5.0.0
+pragma solidity ^0.8.28;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+
+contract NFTMintMachine is ERC721, ERC721Enumerable, ERC721URIStorage, ERC721Pausable, Ownable, ERC721Burnable, VRFConsumerBaseV2 {
+    using Strings for uint256;
+
+    VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
+    uint256 private immutable i_subscriptionId;
+    bytes32 private immutable i_gasLane;
+    uint32 private immutable i_callbackGasLimit;
+    uint16 private constant REQUEST_CONFIRMATIONS = 3;
+    uint32 private constant NUM_WORDS = 1;
+
+    mapping(uint256 => address) private s_requestIdToSender;
+
+    uint256 private _nextTokenId;
+    string public Welcome = "";
+    uint256 public totalMints = 0;
+    uint256 public mintPrice = 0.02 ether;
+    uint32 public maxSupply = 8;
+    uint8 public maxPerWallet = 8;
+    string public baseURI = "https://plum-late-buzzard-391.mypinata.cloud/ipfs/QmPki753D29mEgv28FZM6HYtQRsZe7uCyY39RAnN47FP7f/";
+    mapping(address => uint256) public walletMints;
+
+    event NFTRequested(uint256 indexed requestId, address requester, address recipient);
+    event NFTMinted(uint256 indexed tokenId, address minter);
+
+    constructor(
+        address initialOwner,
+        address vrfCoordinatorV2,
+        uint256 subscriptionId,
+        bytes32 gasLane,
+        uint32 callbackGasLimit
+    )
+        ERC721("NFTMintMachine", "NMM")
+        Ownable(initialOwner)
+        VRFConsumerBaseV2(vrfCoordinatorV2)
+    {
+        i_vrfCoordinator = VRFCoordinatorV2Interface(vrfCoordinatorV2);
+        i_subscriptionId = subscriptionId;
+        i_gasLane = gasLane;
+        i_callbackGasLimit = callbackGasLimit;
+    }
+
+    function pause() public onlyOwner {
+        _pause();
+    }
+
+    function unpause() public onlyOwner {
+        _unpause();
+    }
+
+    function requestRandomMint(address recipient) public payable {
+        require(!paused(), "Minting is paused");
+        require(totalMints < maxSupply, "Max supply reached");
+        require(walletMints[recipient] < maxPerWallet, "Max mints per wallet reached");
+        require(msg.value >= mintPrice, "Insufficient payment");
+
+        uint256 requestId = i_vrfCoordinator.requestRandomWords(
+            i_gasLane,
+            uint64(i_subscriptionId),
+            REQUEST_CONFIRMATIONS,
+            i_callbackGasLimit,
+            NUM_WORDS
+        );
+
+        s_requestIdToSender[requestId] = recipient;
+        emit NFTRequested(requestId, msg.sender, recipient);
+    }
+
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        address recipient = s_requestIdToSender[requestId];
+        uint256 newTokenId = _nextTokenId++;
+        uint256 randomNumber = randomWords[0] % maxSupply;
+
+        _safeMint(recipient, newTokenId);
+        _setTokenURI(newTokenId, string(abi.encodePacked(baseURI, randomNumber.toString())));
+
+        totalMints++;
+        walletMints[recipient]++;
+
+        delete s_requestIdToSender[requestId];
+        emit NFTMinted(newTokenId, recipient);
+    }
+
+    function setWelcome(string memory _welcome) public onlyOwner {
+        Welcome = _welcome;
+    }
+
+    function setMintPrice(uint256 _mintPrice) public onlyOwner {
+        mintPrice = _mintPrice;
+    }
+
+    function setMaxSupply(uint32 _maxSupply) public onlyOwner {
+        maxSupply = _maxSupply;
+    }
+
+    function setMaxPerWallet(uint8 _maxPerWallet) public onlyOwner {
+        maxPerWallet = _maxPerWallet;
+    }
+
+    function setBaseURI(string memory _baseURI) public onlyOwner {
+        baseURI = _baseURI;
+    }
+
+    function withdraw() public onlyOwner {
+        uint256 balance = address(this).balance;
+        payable(owner()).transfer(balance);
+    }
+
+    // The following functions are overrides required by Solidity.
+
+    function _update(address to, uint256 tokenId, address auth)
+        internal
+        override(ERC721, ERC721Enumerable, ERC721Pausable)
+        returns (address)
+    {
+        return super._update(to, tokenId, auth);
+    }
+
+    function _increaseBalance(address account, uint128 value)
+        internal
+        override(ERC721, ERC721Enumerable)
+    {
+        super._increaseBalance(account, value);
+    }
+
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (string memory)
+    {
+        return super.tokenURI(tokenId);
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721Enumerable, ERC721URIStorage)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+}
